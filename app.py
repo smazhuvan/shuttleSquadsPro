@@ -72,7 +72,7 @@ st.markdown('<p class="sub-font">Next-Gen Predictive Analytics Engine</p>', unsa
 # --- CACHED DATA FETCHING ---
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_rankings(t_id):
-    api_url = f"http://localhost:8000/api/power-rankings/{t_id}"
+    api_url = f"https://shuttlesquadspro.onrender.com/api/power-rankings/{t_id}"
     response = requests.get(api_url)
     if response.status_code == 200:
         return response.json()
