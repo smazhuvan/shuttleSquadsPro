@@ -14,37 +14,38 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CUSTOM CSS FOR PREMIUM UI (Glassmorphism & Gradients) ---
+# --- CUSTOM CSS FOR HIGH-VISIBILITY LIGHT MODE ---
 st.markdown("""
     <style>
-    /* Dark Theme Base */
-    .stApp { background-color: #0f172a; color: #f8fafc; }
+    /* Light Theme Base */
+    .stApp { background-color: #f8fafc; color: #0f172a; }
     
     /* Gradient Title */
     .big-font {
         font-size: 3.5rem !important;
         font-weight: 900;
-        background: linear-gradient(135deg, #a855f7, #6366f1, #3b82f6);
+        background: linear-gradient(135deg, #4f46e5, #2563eb, #0ea5e9);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         margin-bottom: 0px;
         line-height: 1.2;
     }
-    .sub-font { color: #94a3b8; font-size: 1.1rem; font-weight: 600; margin-top: -5px; margin-bottom: 30px; letter-spacing: 2px; text-transform: uppercase;}
+    .sub-font { color: #64748b; font-size: 1.1rem; font-weight: 700; margin-top: -5px; margin-bottom: 30px; letter-spacing: 2px; text-transform: uppercase;}
     
-    /* Stylized Metric Cards */
+    /* Crisp Metric Cards */
     div[data-testid="metric-container"] {
-        background: linear-gradient(145deg, #1e293b, #0f172a);
-        border: 1px solid #334155;
+        background-color: #ffffff;
+        border: 1px solid #e2e8f0;
         padding: 20px;
-        border-radius: 16px;
-        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
-        transition: transform 0.3s ease, border-color 0.3s ease;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+        color: #0f172a;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
     }
     div[data-testid="metric-container"]:hover {
-        transform: translateY(-5px);
-        border-color: #6366f1;
-        box-shadow: 0 15px 25px -5px rgba(99, 102, 241, 0.4);
+        transform: translateY(-3px);
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        border-color: #cbd5e1;
     }
     
     /* VS Text Styling */
@@ -57,6 +58,10 @@ st.markdown("""
         -webkit-text-fill-color: transparent;
         margin-top: 20px;
     }
+    
+    /* Team Predictor Boxes */
+    .team-box-blue { background-color: #ffffff; padding: 20px; border-radius: 12px; border-top: 4px solid #3b82f6; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); color: #0f172a;}
+    .team-box-red { background-color: #ffffff; padding: 20px; border-radius: 12px; border-top: 4px solid #ef4444; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); color: #0f172a;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -67,7 +72,7 @@ st.markdown('<p class="sub-font">Next-Gen Predictive Analytics Engine</p>', unsa
 # --- CACHED DATA FETCHING ---
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_rankings(t_id):
-    api_url = f"https://shuttlesquadspro.onrender.com/api/power-rankings/{t_id}"
+    api_url = f"http://localhost:8000/api/power-rankings/{t_id}"
     response = requests.get(api_url)
     if response.status_code == 200:
         return response.json()
@@ -75,9 +80,7 @@ def fetch_rankings(t_id):
 
 # --- SIDEBAR CONTROLS ---
 with st.sidebar:
-    # Reliable Image Link for the Logo
-    st.image("logo.png", width=200)
-    
+    st.image("logo.png", width=150) # Assuming your custom logo is named logo.png
     st.header("⚡ Oracle Link")
     st.caption("Connect to a live tournament database.")
     
@@ -91,16 +94,6 @@ with st.sidebar:
             st.cache_data.clear()
             st.toast("Cache cleared! Pulling fresh live data.", icon="🔥")
             st.session_state["data_loaded"] = True
-    
-    st.markdown("---")
-    with st.expander("📖 How the AI Works", expanded=False):
-        st.markdown("""
-            **The Architecture:**
-            * Reads live scores from Supabase.
-            * Applies the **'Fight-Hard' MoV** (Margin of Victory) multiplier.
-            * Punishes teams who drop easy points.
-            * Baseline Elo starts at **1500**.
-        """)
 
 # --- HELPER FUNCTIONS ---
 def expected_win_prob(rating_a, rating_b):
@@ -129,7 +122,6 @@ if run_analysis or "data_loaded" in st.session_state:
             else:
                 rankings = data["rankings"]
                 
-                # --- DATA PREP ---
                 df = pd.DataFrame(rankings)
                 df.index = df.index + 1
                 
@@ -140,15 +132,14 @@ if run_analysis or "data_loaded" in st.session_state:
                     else: return "🥉 C-Tier (Underdog)"
                     
                 def get_color(elo):
-                    if elo >= 1550: return "#a855f7" 
-                    elif elo >= 1515: return "#3b82f6" 
-                    elif elo >= 1485: return "#10b981" 
-                    else: return "#ef4444" 
+                    if elo >= 1550: return "#8b5cf6" # Purple
+                    elif elo >= 1515: return "#3b82f6" # Blue
+                    elif elo >= 1485: return "#10b981" # Green
+                    else: return "#ef4444" # Red
                     
                 df["Form"] = df["power_rating"].apply(get_tier)
                 df["Color"] = df["power_rating"].apply(get_color)
                 
-                # --- TOP METRICS ROW ---
                 col1, col2, col3 = st.columns(3)
                 
                 top_team = df.iloc[0]["team"]
@@ -166,23 +157,15 @@ if run_analysis or "data_loaded" in st.session_state:
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 
-                # --- INTERACTIVE TABS ---
                 tab1, tab2, tab3 = st.tabs(["🏟️ Global Leaderboard", "⚔️ Head-to-Head Predictor", "📈 Visual Insights"])
                 
                 with tab1:
                     display_df = df.drop(columns=["Color"]).rename(columns={"team": "Franchise", "power_rating": "Power Rating (Elo)"})
-                    
                     st.dataframe(
                         display_df,
                         column_config={
                             "Franchise": st.column_config.TextColumn("Team Name", width="medium"),
-                            "Power Rating (Elo)": st.column_config.ProgressColumn(
-                                "Live Elo Rating",
-                                help="Statistically derived strength. 1500 is the starting baseline.",
-                                format="%d ⚡",
-                                min_value=1300, 
-                                max_value=1700,
-                            ),
+                            "Power Rating (Elo)": st.column_config.ProgressColumn("Live Elo Rating", format="%d ⚡", min_value=1300, max_value=1700),
                             "Form": st.column_config.TextColumn("AI Projection", width="large")
                         },
                         width="stretch",
@@ -191,14 +174,12 @@ if run_analysis or "data_loaded" in st.session_state:
 
                 with tab2:
                     st.markdown("### 🤖 Matchup Simulator & Odds")
-                    st.caption("Select any two teams to view the AI's predicted outcome, expected scoreline, and implied betting odds.")
                     
                     team_names = df["team"].tolist()
-                    
                     pred_col1, pred_col2, pred_col3 = st.columns([3, 1, 3])
                     
                     with pred_col1:
-                        st.markdown("<div style='background-color: #1e293b; padding: 20px; border-radius: 15px; border-top: 4px solid #3b82f6;'>", unsafe_allow_html=True)
+                        st.markdown("<div class='team-box-blue'>", unsafe_allow_html=True)
                         team_a_sel = st.selectbox("Select Blue Corner", team_names, index=0)
                         team_a_elo = df[df['team'] == team_a_sel]['power_rating'].values[0]
                         st.markdown(f"**Elo:** {team_a_elo} ⚡")
@@ -208,7 +189,7 @@ if run_analysis or "data_loaded" in st.session_state:
                         st.markdown("<p class='vs-text'>VS</p>", unsafe_allow_html=True)
                         
                     with pred_col3:
-                        st.markdown("<div style='background-color: #1e293b; padding: 20px; border-radius: 15px; border-top: 4px solid #ef4444;'>", unsafe_allow_html=True)
+                        st.markdown("<div class='team-box-red'>", unsafe_allow_html=True)
                         team_b_sel = st.selectbox("Select Red Corner", team_names, index=len(team_names)-1)
                         team_b_elo = df[df['team'] == team_b_sel]['power_rating'].values[0]
                         st.markdown(f"**Elo:** {team_b_elo} ⚡")
@@ -217,17 +198,14 @@ if run_analysis or "data_loaded" in st.session_state:
                     if team_a_sel != team_b_sel:
                         prob_a = expected_win_prob(team_a_elo, team_b_elo)
                         prob_b = 1 - prob_a
-                        
                         odds_a = round(1 / prob_a, 2)
                         odds_b = round(1 / prob_b, 2)
-                        
                         score_a, score_b = predict_scoreline(prob_a)
                         
                         st.markdown("---")
                         st.markdown("#### 🔮 AI Telemetry Report")
                         
                         res_col1, res_col2, res_col3 = st.columns(3)
-                        
                         with res_col1:
                             st.metric(label=f"Win Prob ({team_a_sel})", value=f"{prob_a*100:.1f}%", delta=f"{odds_a}x Payout")
                         with res_col2:
@@ -235,13 +213,13 @@ if run_analysis or "data_loaded" in st.session_state:
                         with res_col3:
                             st.metric(label=f"Win Prob ({team_b_sel})", value=f"{prob_b*100:.1f}%", delta=f"{odds_b}x Payout", delta_color="inverse")
                             
-                        # BULLETPROOF HTML PROGRESS BAR (Using CSS Linear Gradient)
+                        # Crisp Progress Bar for Light Mode
                         st.markdown(f"""
-                            <div style="display: flex; justify-content: space-between; margin-top: 25px; margin-bottom: 8px; font-size: 0.9rem; font-weight: bold;">
-                                <span style="color: #60a5fa;">🔵 {team_a_sel} ({prob_a*100:.1f}%)</span>
-                                <span style="color: #f87171;">🔴 {team_b_sel} ({prob_b*100:.1f}%)</span>
+                            <div style="display: flex; justify-content: space-between; margin-top: 25px; margin-bottom: 8px; font-size: 0.9rem; font-weight: 800; color: #334155;">
+                                <span style="color: #2563eb;">🔵 {team_a_sel} ({prob_a*100:.1f}%)</span>
+                                <span style="color: #dc2626;">🔴 {team_b_sel} ({prob_b*100:.1f}%)</span>
                             </div>
-                            <div style="width: 100%; height: 26px; border-radius: 13px; border: 2px solid #1e293b; 
+                            <div style="width: 100%; height: 26px; border-radius: 13px; border: 1px solid #cbd5e1; box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
                                  background: linear-gradient(to right, #3b82f6 {prob_a*100}%, #ef4444 {prob_a*100}%);">
                             </div>
                         """, unsafe_allow_html=True)
@@ -250,50 +228,34 @@ if run_analysis or "data_loaded" in st.session_state:
 
                 with tab3:
                     st.markdown("### 📊 Distribution & Heatmap")
-                    
                     chart_col1, chart_col2 = st.columns(2)
                     
                     with chart_col1:
                         st.markdown("**Elo Distribution Tracker**")
-                        
-                        # ALTAIR FIX: Single un-layered chart. 'zero=False' prevents axis zooming bugs.
                         dots = alt.Chart(df).mark_circle(size=400, opacity=1).encode(
                             x=alt.X('power_rating:Q', scale=alt.Scale(domain=[1300, int(df['power_rating'].max()) + 50], zero=False), title='Live Elo Rating'),
                             y=alt.Y('team:N', sort='-x', title=None),
                             color=alt.Color('Color:N', scale=None), 
                             tooltip=['team', 'power_rating', 'Form']
                         ).properties(height=350).configure_view(strokeWidth=0)
-                        
                         st.altair_chart(dots, width="stretch")
                     
                     with chart_col2:
                         st.markdown("**All-vs-All Win Probability Matrix**")
                         matrix_data = []
                         for a, b in itertools.product(team_names, repeat=2):
-                            if a == b:
-                                prob = 0.5
-                            else:
-                                e_a = df[df['team'] == a]['power_rating'].values[0]
-                                e_b = df[df['team'] == b]['power_rating'].values[0]
-                                prob = expected_win_prob(e_a, e_b)
+                            prob = 0.5 if a == b else expected_win_prob(df[df['team'] == a]['power_rating'].values[0], df[df['team'] == b]['power_rating'].values[0])
                             matrix_data.append({'Team A (Row)': a, 'Team B (Col)': b, 'Win Probability': prob})
                             
-                        matrix_df = pd.DataFrame(matrix_data)
-                        
-                        heatmap = alt.Chart(matrix_df).mark_rect().encode(
-                            y=alt.Y('Team A (Row):N', title="Simulated Winner (Row)"),
-                            x=alt.X('Team B (Col):N', title="Simulated Loser (Col)"),
+                        heatmap = alt.Chart(pd.DataFrame(matrix_data)).mark_rect().encode(
+                            y=alt.Y('Team A (Row):N', title="Winner (Row)"),
+                            x=alt.X('Team B (Col):N', title="Loser (Col)"),
                             color=alt.Color('Win Probability:Q', scale=alt.Scale(scheme='viridis'), legend=alt.Legend(format=".0%")),
-                            tooltip=[
-                                alt.Tooltip('Team A (Row):N', title='If Team A'),
-                                alt.Tooltip('Team B (Col):N', title='Plays Team B'),
-                                alt.Tooltip('Win Probability:Q', title='Team A Win Prob', format='.1%')
-                            ]
+                            tooltip=['Team A (Row):N', 'Team B (Col):N', alt.Tooltip('Win Probability:Q', format='.1%')]
                         ).properties(height=350).configure_view(strokeWidth=0)
-                        
                         st.altair_chart(heatmap, width="stretch")
 
         except Exception as e:
-            st.error(f"📡 Connection failed. Ensure your FastAPI Oracle server is running on port 8000. Error: {e}")
+            st.error(f"📡 Connection failed. Error: {e}")
 else:
-    st.info("👈 Enter your Tournament ID in the sidebar and click 'Initialize Engine' to begin.")
+    st.info("👈 Enter your Tournament ID in the sidebar and click 'Initialize 🚀' to begin.")
