@@ -3,7 +3,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
-
+from monte_carlo import run_tournament_simulation
 from engine import generate_power_rankings, calculate_glicko2_match, supabase
 from tournament_builder import TournamentGraphGenerator
 
@@ -107,3 +107,29 @@ async def process_match_result(payload: SupabaseWebhookPayload):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/futures/{tournament_id}")
+def get_tournament_futures(tournament_id: str):
+    """
+    Fetches live ratings and runs a 10,000 iteration Monte Carlo simulation.
+    """
+    try:
+        # 1. Grab the current live power rankings (Super fast O(1) fetch)
+        res = supabase.table("team_ratings").select("*").eq("tournament_id", tournament_id).order("rating", desc=True).execute()
+        
+        if not res.data or len(res.data) < 8:
+            return {"error": "Need at least 8 teams with calculated ratings to run the Monte Carlo simulation."}
+
+        # 2. Format the data for the simulator
+        teams = [{"team": row["team_name"], "power_rating": round(row["rating"])} for row in res.data]
+
+        # 3. Fire up the engine! Runs 10k simulations in milliseconds.
+        futures_forecast = run_tournament_simulation(teams, iterations=10000)
+
+        return {
+            "tournament_id": tournament_id,
+            "iterations": 10000,
+            "forecast": futures_forecast
+        }
+    except Exception as e:
+        return {"error": str(e)}
