@@ -133,3 +133,15 @@ def get_tournament_futures(tournament_id: str):
         }
     except Exception as e:
         return {"error": str(e)}
+
+# Add this to api.py
+@app.get("/api/bracket/{tournament_id}")
+def get_bracket(tournament_id: str):
+    # This calls your TournamentGraphGenerator logic
+    # For now, we return the structured rounds
+    try:
+        res = supabase.table("matches").select("*").eq("tournament_id", tournament_id).execute()
+        # Logic to group matches by 'round_name' (QF, Semi-Final, Final)
+        return {"rounds": organized_matches} 
+    except Exception as e:
+        return {"error": str(e)}
