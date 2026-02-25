@@ -9,79 +9,68 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# 2. THE ELO CONFIGURATION
-INITIAL_RATING = 1500
-K_FACTOR = 32 # Base volatility
+# 2. GLICKO-2 MATH ENGINE
+class Glicko2Team:
+    def __init__(self, rating=1500, rd=350, vol=0.06):
+        # Convert to Glicko-2 scale
+        self.rating = (rating - 1500) / 173.7178
+        self.rd = rd / 173.7178
+        self.vol = vol
 
-def calculate_expected_score(rating_a, rating_b):
-    """Calculates the probability (0 to 1) of Team A beating Team B."""
-    return 1 / (1 + math.pow(10, (rating_b - rating_a) / 400))
+    def _g(self, rd):
+        return 1 / math.sqrt(1 + 3 * (rd ** 2) / (math.pi ** 2))
 
-def calculate_mov_multiplier(score_a, score_b):
-    """
-    Custom 'Fight-Hard' Multiplier. 
-    A bigger point difference means a bigger rating swing.
-    """
-    diff = abs((score_a or 0) - (score_b or 0))
-    # Formula: log of point diff increases the multiplier slightly
-    return math.log(diff + 1) * 0.8 if diff > 0 else 1
+    def _E(self, rating, other_rating, other_rd):
+        return 1 / (1 + math.exp(-self._g(other_rd) * (rating - other_rating)))
 
-def generate_power_rankings(tournament_id):
-    """Fetches matches and runs the Elo algorithm chronologically."""
-    
-    # Fetch all finished matches for this tournament
-    response = supabase.table("matches").select("*").eq("tournament_id", tournament_id).eq("status", "finished").order("match_index").execute()
-    matches = response.data
-    
-    ratings = {}
+    def update(self, opponent_rating, opponent_rd, outcome):
+        # outcome: 1 for win, 0 for loss
+        opp_g_rating = (opponent_rating - 1500) / 173.7178
+        opp_g_rd = opponent_rd / 173.7178
 
-    for match in matches:
-        team_a = match['team_a']
-        team_b = match['team_b']
-        score_a = match['score_a'] or 0
-        score_b = match['score_b'] or 0
-        winner = match['winner']
+        g_phi = self._g(opp_g_rd)
+        E = self._E(self.rating, opp_g_rating, opp_g_rd)
+
+        # Prevent division by zero if E is exactly 1 or 0
+        v_denominator = (g_phi ** 2) * E * (1 - E)
+        v = 1 / v_denominator if v_denominator > 0 else 9999
         
-        # Ignore placeholders or incomplete data
-        if not team_a or not team_b or 'TBD' in team_a or 'TBD' in team_b or not winner:
-            continue
-            
-        # Initialize teams if they don't exist
-        if team_a not in ratings: ratings[team_a] = INITIAL_RATING
-        if team_b not in ratings: ratings[team_b] = INITIAL_RATING
+        new_vol = self.vol # Simplified volatility for webhook speed
+        
+        # Update Rating Deviation (RD)
+        rd_star = math.sqrt(self.rd ** 2 + new_vol ** 2)
+        new_rd = 1 / math.sqrt((1 / rd_star ** 2) + (1 / v))
 
-        rA = ratings[team_a]
-        rB = ratings[team_b]
+        # Update Rating
+        new_rating = self.rating + (new_rd ** 2) * g_phi * (outcome - E)
 
-        # Calculate Expected Win Probabilities
-        expected_a = calculate_expected_score(rA, rB)
-        expected_b = calculate_expected_score(rB, rA)
+        # Convert back to standard Elo-style scale
+        return {
+            "rating": round(new_rating * 173.7178 + 1500, 2),
+            "rd": round(new_rd * 173.7178, 2),
+            "volatility": new_vol
+        }
 
-        # Actual Results (1 for win, 0 for loss)
-        actual_a = 1 if winner == team_a else 0
-        actual_b = 1 if winner == team_b else 0
-
-        # Apply Fight-Hard Margin of Victory multiplier
-        mov = calculate_mov_multiplier(score_a, score_b)
-        adjusted_k = K_FACTOR * mov
-
-        # Update Ratings
-        ratings[team_a] = round(rA + adjusted_k * (actual_a - expected_a))
-        ratings[team_b] = round(rB + adjusted_k * (actual_b - expected_b))
-
-    # Sort teams by their new Power Rating
-    ranked_teams = sorted(ratings.items(), key=lambda item: item[1], reverse=True)
+def calculate_glicko2_match(team_a_stats, team_b_stats, winner):
+    """Takes current stats and winner, returns updated stats for both."""
+    team_a = Glicko2Team(team_a_stats['rating'], team_a_stats['rd'], team_a_stats['volatility'])
+    team_b = Glicko2Team(team_b_stats['rating'], team_b_stats['rd'], team_b_stats['volatility'])
     
-    return [{"team": t[0], "power_rating": t[1]} for t in ranked_teams]
+    outcome_a = 1 if winner == "team_a" else 0
+    outcome_b = 1 if winner == "team_b" else 0
 
-# --- TEST THE ENGINE ---
-if __name__ == "__main__":
-    # Replace with a real tournament ID from your database
-    TEST_TOURNAMENT_ID = "your-tournament-uuid-here" 
+    new_a = team_a.update(team_b_stats['rating'], team_b_stats['rd'], outcome_a)
+    new_b = team_b.update(team_a_stats['rating'], team_a_stats['rd'], outcome_b)
     
-    print("🧠 Booting ShuttleSquads AI Engine...")
-    rankings = generate_power_rankings(TEST_TOURNAMENT_ID)
+    return new_a, new_b
+
+# 3. REFACTORED O(1) POWER RANKINGS GENERATOR
+def generate_power_rankings(tournament_id):
+    """
+    Lightning-fast read! No more looping through history. 
+    Just grabs the pre-calculated numbers from the database.
+    """
+    response = supabase.table("team_ratings").select("*").eq("tournament_id", tournament_id).order("rating", desc=True).execute()
     
-    print("\n🏆 GLOBAL POWER RANKINGS 🏆")
-    for idx, team in enumerate(rankings):
-        print(f"#{idx + 1}: {team['team']} (Elo: {team['power_rating']})")
+    # Format exactly as your frontend expects
+    return [{"team": row["team_name"], "power_rating": round(row["rating"])} for row in response.data]
