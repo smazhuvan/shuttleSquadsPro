@@ -46,10 +46,62 @@ def read_root():
     return {"status": "AI Engine is Online"}
 
 @app.get("/api/power-rankings/{tournament_id}")
-def get_rankings(tournament_id: str):
+def get_power_rankings(tournament_id: str):
     try:
-        rankings = generate_power_rankings(tournament_id)
-        return {"tournament_id": tournament_id, "rankings": rankings}
+        # 1. Fetch Ratings & Matches
+        ratings_res = supabase.table("team_ratings").select("*").eq("tournament_id", tournament_id).order("rating", desc=True).execute()
+        matches_res = supabase.table("matches").select("*").eq("tournament_id", tournament_id).eq("status", "finished").execute()
+        
+        matches = matches_res.data or []
+        team_stats = {}
+
+        # 2. Process all finished matches for advanced metrics
+        for m in matches:
+            t1, t2 = m.get("team_a"), m.get("team_b")
+            s1, s2 = m.get("score_a", 0), m.get("score_b", 0)
+            winner = m.get("winner")
+
+            if not t1 or not t2 or s1 is None or s2 is None: continue
+
+            for t in [t1, t2]:
+                if t not in team_stats:
+                    team_stats[t] = {"scored": 0, "conceded": 0, "clutch_games": 0, "clutch_wins": 0, "upsets": 0}
+
+            # Dominance Quotient Math
+            team_stats[t1]["scored"] += s1
+            team_stats[t1]["conceded"] += s2
+            team_stats[t2]["scored"] += s2
+            team_stats[t2]["conceded"] += s1
+
+            # Clutch Factor Math (Games decided by 3 points or less)
+            if abs(s1 - s2) <= 3:
+                team_stats[t1]["clutch_games"] += 1
+                team_stats[t2]["clutch_games"] += 1
+                if winner == t1: team_stats[t1]["clutch_wins"] += 1
+                if winner == t2: team_stats[t2]["clutch_wins"] += 1
+
+        # 3. Format the final enriched payload
+        enriched_rankings = []
+        for r in ratings_res.data:
+            team = r["team_name"]
+            stats = team_stats.get(team, {"scored": 1, "conceded": 1, "clutch_games": 0, "clutch_wins": 0})
+            
+            # Avoid division by zero
+            conceded = stats["conceded"] if stats["conceded"] > 0 else 1
+            dq = round(stats["scored"] / conceded, 2)
+            
+            clutch_rate = round((stats["clutch_wins"] / stats["clutch_games"]) * 100, 1) if stats["clutch_games"] > 0 else 0.0
+
+            enriched_rankings.append({
+                "team": team,
+                "power_rating": round(r["rating"]),
+                "volatility": round(r.get("volatility", 0.06), 3), # Extracted from Glicko-2
+                "dominance_quotient": dq,
+                "clutch_win_rate": clutch_rate,
+                "giant_killer": dq > 1.0 and round(r["rating"]) < 1550 # Simple upset flag logic
+            })
+
+        return {"tournament_id": tournament_id, "rankings": enriched_rankings}
     except Exception as e:
         return {"error": str(e)}
     
