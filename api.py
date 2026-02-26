@@ -221,13 +221,17 @@ def get_bracket(identifier: str):
             
         # 3. Format into the array structure
         organized_matches = []
+        
+        # UPDATED: Explicitly mapping your custom gameplay order
         round_order = {
-            "Quarter-Finals": 1, 
-            "Quarter-Final": 1, 
-            "Semi-Finals": 2, 
-            "Semi-Final": 2, 
-            "Final": 3, 
-            "Championship": 3
+            "Qualifier": 1,
+            "Quarter-Finals": 2, 
+            "Quarter-Final": 2, 
+            "Semi-Finals": 3, 
+            "Semi-Final": 3, 
+            "3rd Place": 4, 
+            "Final": 5, 
+            "Championship": 5
         }
         
         sorted_round_names = sorted(rounds_dict.keys(), key=lambda x: round_order.get(x, 99))
