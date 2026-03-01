@@ -71,14 +71,28 @@ def get_power_rankings(identifier: str):
     try:
         tournament_id = resolve_tournament_id(identifier)
 
-        # 1. Fetch Ratings & Matches
+        # 1. Fetch Current Tournament Ratings & Matches
         ratings_res = supabase.table("team_ratings").select("*").eq("tournament_id", tournament_id).order("rating", desc=True).execute()
         matches_res = supabase.table("matches").select("*").eq("tournament_id", tournament_id).eq("status", "finished").execute()
         
+        # 2. NEW: Fetch Global Player History!
+        # Extract all individual player names from the team strings (e.g. "Lawrence - Divek" -> "Lawrence", "Divek")
+        all_player_names = set()
+        for r in ratings_res.data:
+            # We replace common separators just in case your data entry varies
+            players = [p.strip() for p in r["team_name"].replace('/', '-').replace('&', '-').split('-')]
+            for p in players:
+                if p: all_player_names.add(p)
+
+        # Query the global 'players' table for everyone in this tournament
+        players_res = supabase.table("players").select("*").in_("name", list(all_player_names)).execute()
+        
+        # Create a fast lookup dictionary: {"Lawrence": {career_data...}, "Divek": {career_data...}}
+        global_players = {p["name"]: p for p in players_res.data} if players_res.data else {}
+
+        # 3. Process current tournament metrics (DQ, Clutch)
         matches = matches_res.data or []
         team_stats = {}
-
-        # 2. Process all finished matches for advanced metrics
         for m in matches:
             t1, t2 = m.get("team_a"), m.get("team_b")
             s1, s2 = m.get("score_a", 0), m.get("score_b", 0)
@@ -88,40 +102,61 @@ def get_power_rankings(identifier: str):
 
             for t in [t1, t2]:
                 if t not in team_stats:
-                    team_stats[t] = {"scored": 0, "conceded": 0, "clutch_games": 0, "clutch_wins": 0, "upsets": 0}
+                    team_stats[t] = {"scored": 0, "conceded": 0, "clutch_games": 0, "clutch_wins": 0}
 
-            # Dominance Quotient Math
             team_stats[t1]["scored"] += s1
             team_stats[t1]["conceded"] += s2
             team_stats[t2]["scored"] += s2
             team_stats[t2]["conceded"] += s1
 
-            # Clutch Factor Math (Games decided by 3 points or less)
             if abs(s1 - s2) <= 3:
                 team_stats[t1]["clutch_games"] += 1
                 team_stats[t2]["clutch_games"] += 1
                 if winner == t1: team_stats[t1]["clutch_wins"] += 1
                 if winner == t2: team_stats[t2]["clutch_wins"] += 1
 
-        # 3. Format the final enriched payload
+        # 4. Format the final payload with BOTH Current and Historical data
         enriched_rankings = []
         for r in ratings_res.data:
-            team = r["team_name"]
-            stats = team_stats.get(team, {"scored": 1, "conceded": 1, "clutch_games": 0, "clutch_wins": 0})
+            team_name = r["team_name"]
+            stats = team_stats.get(team_name, {"scored": 1, "conceded": 1, "clutch_games": 0, "clutch_wins": 0})
             
-            # Avoid division by zero
             conceded = stats["conceded"] if stats["conceded"] > 0 else 1
             dq = round(stats["scored"] / conceded, 2)
-            
             clutch_rate = round((stats["clutch_wins"] / stats["clutch_games"]) * 100, 1) if stats["clutch_games"] > 0 else 0.0
 
+            # --- NEW: Career Aggregation Math ---
+            team_players = [p.strip() for p in team_name.replace('/', '-').replace('&', '-').split('-')]
+            career_matches = 0
+            career_wins = 0
+            career_tfp = 0
+            career_trp = 0
+
+            for p in team_players:
+                if p in global_players:
+                    gp = global_players[p]
+                    career_matches += gp.get("career_matches", 0)
+                    career_wins += gp.get("career_wins", 0)
+                    career_tfp += gp.get("career_tfp", 0)
+                    career_trp += gp.get("career_trp", 0)
+
+            # Combined Career Metrics for this specific duo
+            career_win_rate = round((career_wins / career_matches * 100), 1) if career_matches > 0 else 0.0
+            career_dq = round((career_tfp / career_trp), 2) if career_trp > 0 else 1.0
+
             enriched_rankings.append({
-                "team": team,
+                "team": team_name,
                 "power_rating": round(r["rating"]),
                 "volatility": round(r.get("volatility", 0.06), 3),
                 "dominance_quotient": dq,
                 "clutch_win_rate": clutch_rate,
-                "giant_killer": dq > 1.0 and round(r["rating"]) < 1550
+                "giant_killer": dq > 1.0 and round(r["rating"]) < 1550,
+                
+                # Injected Global Stats
+                "career_matches": career_matches,
+                "career_win_rate": career_win_rate,
+                "career_dq": career_dq,
+                "veteran_status": career_matches >= 10  # Flags if they are highly experienced
             })
 
         return {"tournament_id": tournament_id, "rankings": enriched_rankings}
