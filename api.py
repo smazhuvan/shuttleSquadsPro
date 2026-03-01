@@ -85,7 +85,7 @@ def get_power_rankings(identifier: str):
                 if p: all_player_names.add(p)
 
         # Query the global 'players' table for everyone in this tournament
-        players_res = supabase.table("players").select("*").in_("name", list(all_player_names)).execute()
+        players_res = supabase.table("global_players").select("*").in_("name", list(all_player_names)).execute()
         
         # Create a fast lookup dictionary: {"Lawrence": {career_data...}, "Divek": {career_data...}}
         global_players = {p["name"]: p for p in players_res.data} if players_res.data else {}
