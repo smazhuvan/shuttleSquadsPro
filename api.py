@@ -281,3 +281,99 @@ async def process_match_result(payload: SupabaseWebhookPayload):
     except Exception as e:
         print(f"Webhook Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/admin/backfill-elo")
+async def backfill_historical_elo():
+    try:
+        # 1. Fetch ALL finished matches in chronological order
+        matches_res = supabase.table("matches").select("*").eq("status", "finished").order("created_at").execute()
+        matches = matches_res.data or []
+
+        if not matches:
+            return {"message": "No historical matches found."}
+
+        # 2. Fetch all global players & reset them to 1500 in local memory for the simulation
+        gp_res = supabase.table("global_players").select("id, name, organizer_id").execute()
+        
+        # Dictionary format: {"Lin Dan": {"id": "uuid", "rating": 1500, "rd": 350, "vol": 0.06}}
+        gp_dict = {
+            p["name"]: {"id": p["id"], "rating": 1500.0, "rd": 350.0, "volatility": 0.06} 
+            for p in gp_res.data
+        } if gp_res.data else {}
+
+        processed_count = 0
+
+        # 3. Play back history chronologically
+        for match in matches:
+            team_a = match.get("team_a")
+            team_b = match.get("team_b")
+            winner_name = match.get("winner")
+
+            if not team_a or not team_b or not winner_name: continue
+
+            # Determine winner key
+            winner_key = "team_a" if winner_name == team_a else ("team_b" if winner_name == team_b else "draw")
+
+            # Split teams
+            players_a = [p.strip() for p in team_a.replace('/', '-').replace('&', '-').split('-') if p.strip()]
+            players_b = [p.strip() for p in team_b.replace('/', '-').replace('&', '-').split('-') if p.strip()]
+            
+            # Helper to get the average rating of a duo
+            def get_avg_stats(p_list):
+                valid_players = [p for p in p_list if p in gp_dict]
+                if not valid_players: return {"rating": 1500.0, "rd": 350.0, "volatility": 0.06}
+                
+                avg_r = sum([gp_dict[p]["rating"] for p in valid_players]) / len(valid_players)
+                avg_rd = sum([gp_dict[p]["rd"] for p in valid_players]) / len(valid_players)
+                avg_v = sum([gp_dict[p]["volatility"] for p in valid_players]) / len(valid_players)
+                return {"rating": avg_r, "rd": avg_rd, "volatility": avg_v}
+
+            stats_a = get_avg_stats(players_a)
+            stats_b = get_avg_stats(players_b)
+
+            # Run Glicko-2 Math
+            new_a, new_b = calculate_glicko2_match(stats_a, stats_b, winner_key)
+            
+            # Calculate Deltas
+            delta_a = new_a["rating"] - stats_a["rating"]
+            delta_b = new_b["rating"] - stats_b["rating"]
+
+            # Distribute Deltas back to individuals
+            for p in players_a:
+                if p in gp_dict:
+                    gp_dict[p]["rating"] += delta_a
+                    gp_dict[p]["rd"] = new_a["rd"]
+                    gp_dict[p]["volatility"] = new_a["volatility"]
+
+            for p in players_b:
+                if p in gp_dict:
+                    gp_dict[p]["rating"] += delta_b
+                    gp_dict[p]["rd"] = new_b["rd"]
+                    gp_dict[p]["volatility"] = new_b["volatility"]
+            
+            processed_count += 1
+
+        # 4. Prepare the final payload for the database
+        updates = []
+        for name, data in gp_dict.items():
+            # Only update players whose Elo actually changed from the baseline 1500
+            if data["rating"] != 1500.0 or data["rd"] != 350.0: 
+                updates.append({
+                    "id": data["id"],
+                    "global_elo": round(data["rating"], 2),
+                    "global_rd": round(data["rd"], 2),
+                    "global_volatility": data["volatility"]
+                })
+
+        # 5. Push the new stats to Supabase in bulk
+        if updates:
+            supabase.table("global_players").upsert(updates).execute()
+
+        return {
+            "status": "Time Machine Successful! ⚡", 
+            "matches_processed": processed_count, 
+            "players_updated": len(updates)
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
