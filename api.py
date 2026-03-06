@@ -128,22 +128,30 @@ def get_power_rankings(identifier: str):
 
             # --- NEW: Career Aggregation Math ---
             team_players = [p.strip() for p in team_name.replace('/', '-').replace('&', '-').split('-')]
-            career_matches = 0
-            career_wins = 0
-            career_tfp = 0
-            career_trp = 0
+            
+            valid_gps = [global_players[p] for p in team_players if p in global_players]
+            
+            if valid_gps:
+                # FIX: Use max() for matches. If both played 7, the team shows 7. 
+                # If one is a veteran (20) and one is new (2), it respects the veteran's experience.
+                career_matches = max([gp.get("career_matches", 0) for gp in valid_gps])
+                
+                # FIX: Average their individual win rates instead of adding raw wins
+                total_win_rate = 0
+                for gp in valid_gps:
+                    w = gp.get("career_wins", 0)
+                    m = gp.get("career_matches", 0)
+                    total_win_rate += (w / m * 100) if m > 0 else 0
+                career_win_rate = round(total_win_rate / len(valid_gps), 1)
 
-            for p in team_players:
-                if p in global_players:
-                    gp = global_players[p]
-                    career_matches += gp.get("career_matches", 0)
-                    career_wins += gp.get("career_wins", 0)
-                    career_tfp += gp.get("career_tfp", 0)
-                    career_trp += gp.get("career_trp", 0)
-
-            # Combined Career Metrics for this specific duo
-            career_win_rate = round((career_wins / career_matches * 100), 1) if career_matches > 0 else 0.0
-            career_dq = round((career_tfp / career_trp), 2) if career_trp > 0 else 1.0
+                # For DQ (TFP / TRP), summing their points gives an accurate combined ratio
+                sum_tfp = sum([gp.get("career_tfp", 0) for gp in valid_gps])
+                sum_trp = sum([gp.get("career_trp", 0) for gp in valid_gps])
+                career_dq = round((sum_tfp / sum_trp), 2) if sum_trp > 0 else 1.0
+            else:
+                career_matches = 0
+                career_win_rate = 0.0
+                career_dq = 1.0
 
             enriched_rankings.append({
                 "team": team_name,
