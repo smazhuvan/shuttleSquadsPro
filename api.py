@@ -181,14 +181,20 @@ async def generate_tournament_graph(config: TournamentConfigRequest):
 async def process_match_result(payload: SupabaseWebhookPayload):
     match = payload.record
 
+    # Only process if the match was just marked as finished
     if match.status != "finished" or (payload.old_record and payload.old_record.get("status") == "finished"):
         return {"status": "ignored", "reason": "Match not newly finished"}
 
     team_a, team_b, winner_name = match.team_a, match.team_b, match.winner
     tourney_id = match.tournament_id
-    winner_key = "team_a" if winner_name == team_a else "team_b"
+    
+    # Map winner string to key for the Glicko engine
+    winner_key = "team_a" if winner_name == team_a else ("team_b" if winner_name == team_b else "draw")
 
     try:
+        # ====================================================================
+        # 1. UPDATE TOURNAMENT-SPECIFIC RATINGS (Your existing logic)
+        # ====================================================================
         res = supabase.table("team_ratings").select("*").in_("team_name", [team_a, team_b]).eq("tournament_id", tourney_id).execute()
         current_data = {row["team_name"]: row for row in res.data}
 
@@ -198,86 +204,80 @@ async def process_match_result(payload: SupabaseWebhookPayload):
         new_a, new_b = calculate_glicko2_match(stats_a, stats_b, winner_key)
 
         supabase.table("team_ratings").upsert([
-            {"team_name": team_a, "tournament_id": tourney_id, "matches_played": stats_a["matches_played"] + 1, **new_a},
-            {"team_name": team_b, "tournament_id": tourney_id, "matches_played": stats_b["matches_played"] + 1, **new_b}
+            {"team_name": team_a, "tournament_id": tourney_id, "matches_played": stats_a.get("matches_played", 0) + 1, **new_a},
+            {"team_name": team_b, "tournament_id": tourney_id, "matches_played": stats_b.get("matches_played", 0) + 1, **new_b}
         ]).execute()
 
-        return {"status": "success", "message": f"Ratings updated for {team_a} and {team_b}"}
+        # ====================================================================
+        # 2. THE NEW GLOBAL ELO ENGINE (Individual Player Tracking)
+        # ====================================================================
+        
+        # A. Get the Organizer ID to find the correct Global Players
+        t_res = supabase.table("tournaments").select("organizer_id").eq("id", tourney_id).execute()
+        if not t_res.data:
+            return {"status": "success", "message": "Local updated. Tournament not found for global update."}
+        organizer_id = t_res.data[0]["organizer_id"]
+
+        # B. Split team strings into individual players (handles singles & doubles seamlessly)
+        players_a = [p.strip() for p in team_a.replace('/', '-').replace('&', '-').split('-') if p.strip()]
+        players_b = [p.strip() for p in team_b.replace('/', '-').replace('&', '-').split('-') if p.strip()]
+        all_players = players_a + players_b
+
+        # C. Fetch their current global stats from the Vault
+        gp_res = supabase.table("global_players").select("id, name, global_elo, global_rd, global_volatility").in_("name", all_players).eq("organizer_id", organizer_id).execute()
+        gp_dict = {p["name"]: p for p in gp_res.data} if gp_res.data else {}
+
+        # D. Helper function: Average the Elo of two players for a Doubles match
+        def get_team_avg_stats(player_names):
+            if not player_names: return {"rating": 1500.0, "rd": 350.0, "volatility": 0.06}
+            
+            # Use 1500 as a default if a player isn't in the global vault yet
+            avg_rating = sum([gp_dict.get(p, {}).get("global_elo", 1500.0) for p in player_names]) / len(player_names)
+            avg_rd = sum([gp_dict.get(p, {}).get("global_rd", 350.0) for p in player_names]) / len(player_names)
+            avg_vol = sum([gp_dict.get(p, {}).get("global_volatility", 0.06) for p in player_names]) / len(player_names)
+            
+            return {"rating": avg_rating, "rd": avg_rd, "volatility": avg_vol}
+
+        global_stats_a = get_team_avg_stats(players_a)
+        global_stats_b = get_team_avg_stats(players_b)
+
+        # E. Calculate the Global Shift
+        global_new_a, global_new_b = calculate_glicko2_match(global_stats_a, global_stats_b, winner_key)
+        
+        # Figure out exactly how many points the team gained or lost
+        delta_rating_a = global_new_a["rating"] - global_stats_a["rating"]
+        delta_rating_b = global_new_b["rating"] - global_stats_b["rating"]
+
+        # F. Apply the exact same delta to the individual players
+        global_updates = []
+        
+        for p in players_a:
+            # We only update players who exist in the global vault (prevents phantom spam)
+            if p in gp_dict:
+                old_p = gp_dict[p]
+                global_updates.append({
+                    "id": old_p["id"],
+                    "global_elo": round(old_p.get("global_elo", 1500.0) + delta_rating_a, 2),
+                    "global_rd": global_new_a["rd"],
+                    "global_volatility": global_new_a["volatility"]
+                })
+
+        for p in players_b:
+            if p in gp_dict:
+                old_p = gp_dict[p]
+                global_updates.append({
+                    "id": old_p["id"],
+                    "global_elo": round(old_p.get("global_elo", 1500.0) + delta_rating_b, 2),
+                    "global_rd": global_new_b["rd"],
+                    "global_volatility": global_new_b["volatility"]
+                })
+
+        # G. Save individual player ratings back to Supabase
+        if global_updates:
+            supabase.table("global_players").upsert(global_updates).execute()
+
+        return {"status": "success", "message": f"Dual-Layer AI Update Complete for {team_a} and {team_b}"}
 
     except Exception as e:
+        print(f"Webhook Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/futures/{identifier}")
-def get_tournament_futures(identifier: str):
-    try:
-        tournament_id = resolve_tournament_id(identifier)
-
-        res = supabase.table("team_ratings").select("*").eq("tournament_id", tournament_id).order("rating", desc=True).execute()
-        
-        if not res.data or len(res.data) < 8:
-            return {"error": "Need at least 8 teams with calculated ratings to run the Monte Carlo simulation."}
-
-        teams = [{"team": row["team_name"], "power_rating": round(row["rating"])} for row in res.data]
-        futures_forecast = run_tournament_simulation(teams, iterations=10000)
-
-        return {
-            "tournament_id": tournament_id,
-            "iterations": 10000,
-            "forecast": futures_forecast
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/api/bracket/{identifier}")
-def get_bracket(identifier: str):
-    try:
-        tournament_id = resolve_tournament_id(identifier)
-
-        # 1. Fetch matches
-        res = supabase.table("matches").select("*").eq("tournament_id", tournament_id).execute()
-        matches = res.data or []
-        
-        # 2. Group matches by their round
-        rounds_dict = {}
-        for m in matches:
-            r_name = m.get("round_name") or "Qualifier" 
-            
-            if r_name not in rounds_dict:
-                rounds_dict[r_name] = []
-                
-            rounds_dict[r_name].append({
-                "id": m.get("id"),
-                "t1": m.get("team_a") or "TBD",
-                "t2": m.get("team_b") or "TBD",
-                "s1": m.get("score_a"),
-                "s2": m.get("score_b"),
-                "winner": m.get("winner")
-            })
-            
-        # 3. Format into the array structure
-        organized_matches = []
-        
-        # UPDATED: Explicitly mapping your custom gameplay order
-        round_order = {
-            "Qualifier": 1,
-            "Quarter-Finals": 2, 
-            "Quarter-Final": 2, 
-            "Semi-Finals": 3, 
-            "Semi-Final": 3, 
-            "3rd Place": 4, 
-            "Final": 5, 
-            "Championship": 5
-        }
-        
-        sorted_round_names = sorted(rounds_dict.keys(), key=lambda x: round_order.get(x, 99))
-        
-        for name in sorted_round_names:
-            organized_matches.append({
-                "name": name,
-                "matches": rounds_dict[name]
-            })
-
-        return {"tournament_id": tournament_id, "rounds": organized_matches} 
-
-    except Exception as e:
-        return {"error": str(e)}
