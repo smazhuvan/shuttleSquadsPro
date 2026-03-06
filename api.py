@@ -292,12 +292,18 @@ async def backfill_historical_elo():
         if not matches:
             return {"message": "No historical matches found."}
 
-        # 2. Fetch all global players & reset them to 1500 in local memory for the simulation
+        # 2. Fetch all global players
         gp_res = supabase.table("global_players").select("id, name, organizer_id").execute()
         
-        # Dictionary format: {"Lin Dan": {"id": "uuid", "rating": 1500, "rd": 350, "vol": 0.06}}
+        # Dictionary format: {"Lin Dan": {"id": "uuid", "org_id": "uuid", "rating": 1500, "rd": 350, "vol": 0.06}}
         gp_dict = {
-            p["name"]: {"id": p["id"], "rating": 1500.0, "rd": 350.0, "volatility": 0.06} 
+            p["name"]: {
+                "id": p["id"], 
+                "org_id": p["organizer_id"], # <--- STORE THE ORG ID HERE
+                "rating": 1500.0, 
+                "rd": 350.0, 
+                "volatility": 0.06
+            } 
             for p in gp_res.data
         } if gp_res.data else {}
 
@@ -311,14 +317,11 @@ async def backfill_historical_elo():
 
             if not team_a or not team_b or not winner_name: continue
 
-            # Determine winner key
             winner_key = "team_a" if winner_name == team_a else ("team_b" if winner_name == team_b else "draw")
 
-            # Split teams
             players_a = [p.strip() for p in team_a.replace('/', '-').replace('&', '-').split('-') if p.strip()]
             players_b = [p.strip() for p in team_b.replace('/', '-').replace('&', '-').split('-') if p.strip()]
             
-            # Helper to get the average rating of a duo
             def get_avg_stats(p_list):
                 valid_players = [p for p in p_list if p in gp_dict]
                 if not valid_players: return {"rating": 1500.0, "rd": 350.0, "volatility": 0.06}
@@ -331,14 +334,11 @@ async def backfill_historical_elo():
             stats_a = get_avg_stats(players_a)
             stats_b = get_avg_stats(players_b)
 
-            # Run Glicko-2 Math
             new_a, new_b = calculate_glicko2_match(stats_a, stats_b, winner_key)
             
-            # Calculate Deltas
             delta_a = new_a["rating"] - stats_a["rating"]
             delta_b = new_b["rating"] - stats_b["rating"]
 
-            # Distribute Deltas back to individuals
             for p in players_a:
                 if p in gp_dict:
                     gp_dict[p]["rating"] += delta_a
@@ -353,19 +353,19 @@ async def backfill_historical_elo():
             
             processed_count += 1
 
-        # 4. Prepare the final payload for the database
+        # 4. Prepare the final payload with the organizer_id included
         updates = []
         for name, data in gp_dict.items():
-            # Only update players whose Elo actually changed from the baseline 1500
             if data["rating"] != 1500.0 or data["rd"] != 350.0: 
                 updates.append({
                     "id": data["id"],
+                    "organizer_id": data["org_id"], # <--- INJECT THE ORG ID TO SATISFY DB CONSTRAINT
                     "global_elo": round(data["rating"], 2),
                     "global_rd": round(data["rd"], 2),
                     "global_volatility": data["volatility"]
                 })
 
-        # 5. Push the new stats to Supabase in bulk
+        # 5. Push updates
         if updates:
             supabase.table("global_players").upsert(updates).execute()
 
