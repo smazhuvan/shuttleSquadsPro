@@ -292,14 +292,15 @@ async def backfill_historical_elo():
         if not matches:
             return {"message": "No historical matches found."}
 
-        # 2. Fetch all global players
+        # 2. Fetch all global players and cache their details
         gp_res = supabase.table("global_players").select("id, name, organizer_id").execute()
         
-        # Dictionary format: {"Lin Dan": {"id": "uuid", "org_id": "uuid", "rating": 1500, "rd": 350, "vol": 0.06}}
+        # Dictionary format: {"Lin Dan": {"id": "uuid", "name": "Lin Dan", "org_id": "uuid", ...}}
         gp_dict = {
             p["name"]: {
                 "id": p["id"], 
-                "org_id": p["organizer_id"], # <--- STORE THE ORG ID HERE
+                "name": p["name"],           # <--- CAPTURE NAME
+                "org_id": p["organizer_id"],  # <--- CAPTURE ORG ID
                 "rating": 1500.0, 
                 "rd": 350.0, 
                 "volatility": 0.06
@@ -353,13 +354,14 @@ async def backfill_historical_elo():
             
             processed_count += 1
 
-        # 4. Prepare the final payload with the organizer_id included
+        # 4. Prepare the final payload with ALL required Not-Null columns
         updates = []
         for name, data in gp_dict.items():
             if data["rating"] != 1500.0 or data["rd"] != 350.0: 
                 updates.append({
                     "id": data["id"],
-                    "organizer_id": data["org_id"], # <--- INJECT THE ORG ID TO SATISFY DB CONSTRAINT
+                    "name": data["name"],           # <--- ADDED NAME
+                    "organizer_id": data["org_id"], # <--- ADDED ORG ID
                     "global_elo": round(data["rating"], 2),
                     "global_rd": round(data["rd"], 2),
                     "global_volatility": data["volatility"]
