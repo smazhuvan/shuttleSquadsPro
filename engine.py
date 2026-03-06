@@ -1,11 +1,16 @@
 # engine.py
+# engine.py
 import os
 from supabase import create_client, Client
-import math
 
-# 1. CONNECT TO SUPABASE (Replace with your actual keys from Supabase Dashboard)
+# Use os.environ to get the keys privately from Render
 SUPABASE_URL = 'https://rmdgclazpbkypyhiouqa.supabase.co'
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJtZGdjbGF6cGJreXB5aGlvdXFhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAzNTM2NzIsImV4cCI6MjA4NTkyOTY3Mn0.fA3JNYxszcIuh71L4YlLTGD6obf1RT9KzSKhrubmzJw"
+# The code will look for a variable named SUPABASE_SERVICE_KEY
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
+
+if not SUPABASE_KEY:
+    # Fallback for local testing only - do not put the real key here
+    SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJtZGdjbGF6cGJreXB5aGlvdXFhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAzNTM2NzIsImV4cCI6MjA4NTkyOTY3Mn0.fA3JNYxszcIuh71L4YlLTGD6obf1RT9KzSKhrubmzJw"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
