@@ -1,6 +1,7 @@
 # engine.py
 # engine.py
 import os
+import math
 from supabase import create_client, Client
 
 # Use os.environ to get the keys privately from Render
