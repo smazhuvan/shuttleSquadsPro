@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 from monte_carlo import run_tournament_simulation
-from engine import generate_power_rankings, calculate_glicko2_match, supabase
+from engine import generate_power_rankings, calculate_glicko2_match, calculate_telemetry_metrics, determine_archetype, supabase
 from tournament_builder import TournamentGraphGenerator
 
 app = FastAPI(title="ShuttleSquads AI Oracle")
@@ -182,6 +182,61 @@ async def generate_tournament_graph(config: TournamentConfigRequest):
         )
         tournament_json = engine.build(playoff_style=config.playoff_style)
         return tournament_json
+    except Exception as e:
+        return {"error": str(e)}
+
+# --- NEW: ADVANCED PLAYER TELEMETRY ENDPOINT ---
+@app.get("/api/player-telemetry/{player_id}")
+def get_player_telemetry(player_id: str):
+    """
+    Returns investor-ready performance indices and archetypes.
+    Example Output: { "player": "Shivakumar", "metrics": {"dominance_index": 76...} }
+    """
+    try:
+        # 1. Get the player's core stats
+        p_res = supabase.table("global_players").select("*").eq("id", player_id).execute()
+        if not p_res.data:
+            raise HTTPException(status_code=404, detail="Player not found")
+        
+        player = p_res.data[0]
+        player_name = player["name"]
+
+        # Calculate True Win Rate
+        win_rate = 0
+        career_matches = player.get("career_matches", 0)
+        if career_matches > 0:
+            win_rate = round((player.get("career_wins", 0) / career_matches) * 100)
+
+        # 2. Fetch all finished matches involving this player (handles singles & doubles)
+        # Using Supabase's .or_ filter to find them in either Team A or Team B
+        matches_res = supabase.table("matches").select("*").eq("status", "finished").or_(f"team_a.ilike.%{player_name}%,team_b.ilike.%{player_name}%").execute()
+        matches = matches_res.data or []
+
+        # 3. Process matches through the new Telemetry Engine
+        metrics = calculate_telemetry_metrics(matches, player_name)
+
+        # 4. Classify the Archetype
+        archetype, insight = determine_archetype(
+            di=metrics["di"], 
+            ci=metrics["ci"], 
+            cf=metrics["cf"], 
+            win_rate=win_rate
+        )
+
+        # 5. Return the pristine JSON Object
+        return {
+            "player": player_name,
+            "glicko_rating": round(player.get("global_elo", 1500)),
+            "win_rate_pct": win_rate,
+            "metrics": {
+                "dominance_index": metrics["di"],
+                "competitive_index": metrics["ci"],
+                "clutch_factor": metrics["cf"]
+            },
+            "archetype": archetype,
+            "insight_string": insight
+        }
+        
     except Exception as e:
         return {"error": str(e)}
 
