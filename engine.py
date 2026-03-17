@@ -80,3 +80,72 @@ def generate_power_rankings(tournament_id):
     
     # Format exactly as your frontend expects
     return [{"team": row["team_name"], "power_rating": round(row["rating"])} for row in response.data]
+
+# ====================================================================
+# 4. TELEMETRY ENGINE (PLAYER ARCHETYPES & INDICES)
+# ====================================================================
+
+def calculate_telemetry_metrics(matches, player_name):
+    """Parses raw match scores to generate 0-100% performance indices."""
+    total_dominance, dominance_count = 0, 0
+    total_competitive, competitive_count = 0, 0
+    clutch_games, clutch_wins = 0, 0
+
+    for m in matches:
+        t1, t2 = m.get("team_a", ""), m.get("team_b", "")
+        s1, s2 = m.get("score_a", 0), m.get("score_b", 0)
+        winner = m.get("winner")
+
+        if not t1 or not t2 or s1 is None or s2 is None: continue
+
+        # Check if our target player is in team A or team B (handles doubles)
+        is_t1 = player_name.lower() in t1.lower()
+        is_t2 = player_name.lower() in t2.lower()
+
+        if not is_t1 and not is_t2: continue
+
+        player_score = s1 if is_t1 else s2
+        opp_score = s2 if is_t1 else s1
+        player_won = (winner == t1 and is_t1) or (winner == t2 and is_t2)
+
+        # 1. Dominance Index (Applied to Wins)
+        if player_won:
+            max_score = max(player_score, 1) # Prevent div by zero
+            dom = (player_score - opp_score) / max_score
+            total_dominance += dom
+            dominance_count += 1
+            
+        # 2. Competitive Index (Applied to Losses)
+        else:
+            max_opp = max(opp_score, 1)
+            comp = player_score / max_opp
+            total_competitive += comp
+            competitive_count += 1
+
+        # 3. Clutch Factor (Games decided by 3 points or less)
+        if abs(player_score - opp_score) <= 3:
+            clutch_games += 1
+            if player_won:
+                clutch_wins += 1
+
+    # Convert to out of 100%
+    di = round((total_dominance / dominance_count) * 100) if dominance_count > 0 else 0
+    ci = round((total_competitive / competitive_count) * 100) if competitive_count > 0 else 0
+    cf = round((clutch_wins / clutch_games) * 100) if clutch_games > 0 else 0
+
+    return {"di": di, "ci": ci, "cf": cf}
+
+def determine_archetype(di, ci, cf, win_rate):
+    """Evaluates indices to assign an investor-friendly player persona."""
+    if di > 40 and win_rate > 60:
+        return "The Dominator", "Overwhelming offensive player who frequently closes matches by wide margins."
+    elif cf > 65:
+        return "The Clutch Artist", "Ice in their veins. Statistically proven to elevate their game when the score is tight."
+    elif di < 25 and ci > 75 and win_rate > 50:
+        return "The Grinder", "Relentless endurance player who wears down opponents in long, grueling rallies."
+    elif ci > 80 and win_rate < 50:
+        return "The Fighter", "Highly resilient competitor. Rarely wins easily, but never goes down without a brutal fight."
+    elif win_rate >= 50:
+        return "The Tactician", "Balanced and methodical. Adapts to the opponent to secure consistent victories."
+    else:
+        return "The Challenger", "Developing competitor actively gaining experience in the tournament circuit."
